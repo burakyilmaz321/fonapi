@@ -1,0 +1,7 @@
+ipykernel
+ipython
+jupyter
+pandas
+pylint
+flake8
+black
