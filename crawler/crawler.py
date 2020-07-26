@@ -1,5 +1,5 @@
 """
-This script crawls data from Tefas and saves it to S3.
+This script crawls data from Tefas and saves it as json locally.
 
 To do so, it does:
 
@@ -95,34 +95,33 @@ def parse_table(content):
     return data
 
 
-def parse_pages(driver):
+def parse_pages(driver, out_dir):
     """Iterate over pages and parse content."""
     LOG.info("Start")
     wait = WebDriverWait(driver, 60)
-    pages = []
+    page = 1
     while True:
-        LOG.info(f"Page #{len(pages)}")
+        LOG.info(f"Page #{page}")
         tabs = {}
         for view in {MAIN_VIEW_ID, DETAIL_VIEW_ID}:
             elem = driver.find_element_by_id(view)
             content = elem.get_attribute("innerHTML")
             parsed = parse_table(content)
             tabs[view] = parsed
-        pages.append(tabs)
+        with open(os.path.join(out_dir, f"{page}.json"), "w", encoding="utf-8") as outf:
+            json.dump(tabs, outf, ensure_ascii=False)
         next_button = driver.find_elements_by_id(NEXT_BUTTON_ID)
         if next_button:
             # selenium WebDriver click() does not work here for some reason
             driver.execute_script(JQUERY_CLICK(NEXT_BUTTON_ID))
             # wait until the next page is loaded
             wait.until(
-                EC.text_to_be_present_in_element(
-                    (By.ID, PAGE_NUM_ID), str(len(pages) + 1)
-                )
+                EC.text_to_be_present_in_element((By.ID, PAGE_NUM_ID), str(page + 1))
             )
         else:
             break
+        page += 1
     LOG.info("End")
-    return pages
 
 
 def main():
@@ -153,6 +152,14 @@ def main():
 
     assert start_date <= end_date, "start date should be before end date"
 
+    # create output directory
+    out_dir = os.path.join(
+        os.path.dirname(__file__),
+        "out",
+        f"{start_date.replace('.', '')}-{end_date.replace('.', '')}",
+    )
+    os.makedirs(out_dir)
+
     # start crawling
     LOG.info(f"Crawling from {start_date} to {end_date}")
     LOG.info("Connecting to the driver...")
@@ -166,12 +173,9 @@ def main():
         WebDriverWait(driver, 60).until(
             EC.text_to_be_present_in_element((By.XPATH, FIRST_ROW_XPATH), end_date)
         )
-        pages = parse_pages(driver)
+        parse_pages(driver, out_dir)
     end = datetime.now()
     LOG.info(f"Crawling completed in {(end - start).total_seconds()} secs")
-
-    with open("data.json", "w", encoding="utf-8") as outf:
-        json.dump(pages, outf, indent=2, ensure_ascii=False)
 
 
 if __name__ == "__main__":
