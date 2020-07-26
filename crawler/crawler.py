@@ -1,6 +1,14 @@
 """
 This script crawls data from Tefas and saves it to S3.
 
+To do so, it does:
+
+* Starts a headless browser session with selenium
+* Gets historic data page
+* Enters given start and end dates
+* Since the data is paginated, traverse each page until there is none
+* Saves the result
+
 Usage
 
 $ python crawler.py --start-date STARTDATE --end-date ENDDATE
@@ -24,6 +32,21 @@ from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
+
+
+# constants
+URL = "https://www.tefas.gov.tr/TarihselVeriler.aspx"
+MAIN_VIEW_ID = "MainContent_GridViewGenel"
+DETAIL_VIEW_ID = "MainContent_GridViewDagilim"
+PAGE_NUM_ID = "MainContent_LabelGenelPageNumber"
+START_DATE_ID = "MainContent_TextBoxStartDate"
+END_DATE_ID = "MainContent_TextBoxEndDate"
+NEXT_BUTTON_ID = "MainContent_ImageButtonGenelNext"
+SEARCH_BUTTON_ID = "MainContent_ButtonSearchDates"
+FIRST_ROW_XPATH = '//*[@id="MainContent_GridViewGenel"]/tbody/tr[2]/td[1]'
+
+# format callable that returns a javascript expression for clicking an element
+JQUERY_CLICK = "jQuery('#{}').click();".format
 
 
 def get_logger():
@@ -55,17 +78,6 @@ def get_logger():
 
 
 LOG = get_logger()
-JQUERY_CLICK = "jQuery('#{}').click();".format
-
-ROOT_URL = "https://www.tefas.gov.tr/TarihselVeriler.aspx"
-MAIN_VIEW_ID = "MainContent_GridViewGenel"
-DETAIL_VIEW_ID = "MainContent_GridViewDagilim"
-NEXT_BUTTON_ID = "MainContent_ImageButtonGenelNext"
-PAGE_NUM_ID = "MainContent_LabelGenelPageNumber"
-START_DATE_ID = "MainContent_TextBoxStartDate"
-END_DATE_ID = "MainContent_TextBoxEndDate"
-SEARCH_BUTTON_ID = "MainContent_ButtonSearchDates"
-FIRST_ROW_XPATH = '//*[@id="MainContent_GridViewGenel"]/tbody/tr[2]/td[1]'
 
 
 def parse_table(content):
@@ -146,7 +158,7 @@ def main():
     LOG.info("Connecting to the driver...")
     start = datetime.now()
     with webdriver.Safari() as driver:
-        driver.get(ROOT_URL)
+        driver.get(URL)
         driver.find_element_by_id(START_DATE_ID).send_keys(start_date)
         driver.find_element_by_id(END_DATE_ID).send_keys(end_date)
         # selenium WebDriver click() does not work here for some reason
