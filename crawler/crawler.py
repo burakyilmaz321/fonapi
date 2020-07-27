@@ -26,6 +26,7 @@ import logging
 import os
 import sys
 from datetime import datetime
+from gzip import GzipFile
 
 from bs4 import BeautifulSoup
 from selenium import webdriver
@@ -36,17 +37,17 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 # constants
 URL = "https://www.tefas.gov.tr/TarihselVeriler.aspx"
-MAIN_VIEW_ID = "MainContent_GridViewGenel"
-DETAIL_VIEW_ID = "MainContent_GridViewDagilim"
-PAGE_NUM_ID = "MainContent_LabelGenelPageNumber"
 START_DATE_ID = "MainContent_TextBoxStartDate"
 END_DATE_ID = "MainContent_TextBoxEndDate"
-NEXT_BUTTON_ID = "MainContent_ImageButtonGenelNext"
 SEARCH_BUTTON_ID = "MainContent_ButtonSearchDates"
-FIRST_ROW_XPATH = '//*[@id="MainContent_GridViewGenel"]/tbody/tr[2]/td[1]'
+TAB_VIEWS = {"Genel", "Dagilim"}
 
-# format callable that returns a javascript expression for clicking an element
+# format callables
+VIEW_ID = "MainContent_GridView{}".format
+PAGE_ID = "MainContent_Label{}PageNumber".format
+NEXT_ID = "MainContent_ImageButton{}Next".format
 JQUERY_CLICK = "jQuery('#{}').click();".format
+ROW_XPATH = '//*[@id="MainContent_GridView{}"]/tbody/tr[2]/td[1]'.format
 
 
 def get_logger():
@@ -95,7 +96,7 @@ def parse_table(content):
     return data
 
 
-def parse_pages(driver, out_dir):
+def parse_pages(driver, out_file, view):
     """Iterate over pages and parse content."""
     LOG.info("Start")
     wait = WebDriverWait(driver, 60)
@@ -103,20 +104,23 @@ def parse_pages(driver, out_dir):
     while True:
         LOG.info(f"Page #{page}")
         tabs = {}
-        for view in {MAIN_VIEW_ID, DETAIL_VIEW_ID}:
-            elem = driver.find_element_by_id(view)
-            content = elem.get_attribute("innerHTML")
-            parsed = parse_table(content)
-            tabs[view] = parsed
-        with open(os.path.join(out_dir, f"{page}.json"), "w", encoding="utf-8") as outf:
-            json.dump(tabs, outf, ensure_ascii=False)
-        next_button = driver.find_elements_by_id(NEXT_BUTTON_ID)
+        elem = driver.find_element_by_id(VIEW_ID(view))
+        content = elem.get_attribute("innerHTML")
+        parsed = parse_table(content)
+        tabs[view] = parsed
+
+        with GzipFile(out_file, "a") as outf:
+            json_str = json.dumps(tabs, ensure_ascii=False) + "\n"
+            json_bytes = json_str.encode('utf-8')
+            outf.write(json_bytes)
+
+        next_button = driver.find_elements_by_id(NEXT_ID(view))
         if next_button:
             # selenium WebDriver click() does not work here for some reason
-            driver.execute_script(JQUERY_CLICK(NEXT_BUTTON_ID))
+            driver.execute_script(JQUERY_CLICK(NEXT_ID(view)))
             # wait until the next page is loaded
             wait.until(
-                EC.text_to_be_present_in_element((By.ID, PAGE_NUM_ID), str(page + 1))
+                EC.text_to_be_present_in_element((By.ID, PAGE_ID(view)), str(page + 1))
             )
         else:
             break
@@ -153,12 +157,9 @@ def main():
     assert start_date <= end_date, "start date should be before end date"
 
     # create output directory
-    out_dir = os.path.join(
-        os.path.dirname(__file__),
-        "out",
-        f"{start_date.replace('.', '')}-{end_date.replace('.', '')}",
-    )
-    os.makedirs(out_dir)
+    out_dir = os.path.join(os.path.dirname(__file__), "out")
+    if not os.path.isdir(out_dir):
+        os.mkdir(out_dir)
 
     # start crawling
     LOG.info(f"Crawling from {start_date} to {end_date}")
@@ -170,10 +171,18 @@ def main():
         driver.find_element_by_id(END_DATE_ID).send_keys(end_date)
         # selenium WebDriver click() does not work here for some reason
         driver.execute_script(JQUERY_CLICK(SEARCH_BUTTON_ID))
-        WebDriverWait(driver, 60).until(
-            EC.text_to_be_present_in_element((By.XPATH, FIRST_ROW_XPATH), end_date)
-        )
-        parse_pages(driver, out_dir)
+        for view in TAB_VIEWS:
+            WebDriverWait(driver, 60).until(
+                EC.text_to_be_present_in_element((By.XPATH, ROW_XPATH(view)), end_date)
+            )
+        for view in TAB_VIEWS:
+            out_file = os.path.join(
+                out_dir,
+                "{}-{}-{}.jsonl.gz".format(
+                    start_date.replace('.', ''), end_date.replace('.', ''), view
+                ),
+            )
+            parse_pages(driver, out_file, view)
     end = datetime.now()
     LOG.info(f"Crawling completed in {(end - start).total_seconds()} secs")
 
