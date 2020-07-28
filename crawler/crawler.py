@@ -1,5 +1,5 @@
 """
-This script crawls data from Tefas and saves it as json locally.
+This script crawls data from Tefas and uploads it to S3.
 
 To do so, it does:
 
@@ -28,6 +28,7 @@ import sys
 from datetime import datetime
 from gzip import GzipFile
 
+import boto3
 from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.common.by import By
@@ -41,6 +42,7 @@ START_DATE_ID = "MainContent_TextBoxStartDate"
 END_DATE_ID = "MainContent_TextBoxEndDate"
 SEARCH_BUTTON_ID = "MainContent_ButtonSearchDates"
 TAB_VIEWS = {"Genel", "Dagilim"}
+S3_BUCKET = "fonapi-staging"
 
 # format callables
 VIEW_ID = "MainContent_GridView{}".format
@@ -128,6 +130,16 @@ def parse_pages(driver, out_file, view):
     LOG.info("End")
 
 
+def upload_to_s3(out_file):
+    """Upload output directory to s3"""
+    basename = os.path.basename(out_file)
+    LOG.info(f"Uploading {out_file} to s3://{S3_BUCKET}/{basename}")
+    s3_resource = boto3.resource("s3")
+    obj = s3_resource.Object(S3_BUCKET, basename)
+    obj.upload_file(Filename=out_file)
+    LOG.info("Upload completed!")
+
+
 def main():
     # parse command line arguments
     parser = argparse.ArgumentParser(description="Crawls price data")
@@ -183,8 +195,9 @@ def main():
                 ),
             )
             parse_pages(driver, out_file, view)
+            upload_to_s3(out_file)
     end = datetime.now()
-    LOG.info(f"Crawling completed in {(end - start).total_seconds()} secs")
+    LOG.info(f"Crawling completed in {(end - start).total_seconds()} secs")    
 
 
 if __name__ == "__main__":
