@@ -1,3 +1,4 @@
+# -*- coding: utf-8 -*-
 """
 This script crawls data from Tefas and uploads it to S3.
 
@@ -25,57 +26,53 @@ import json
 import logging
 import os
 import sys
+import time
 from datetime import datetime
 from gzip import GzipFile
 
 import boto3
 from bs4 import BeautifulSoup
 from selenium import webdriver
+from selenium.webdriver.firefox.options import Options
+from selenium.webdriver.common.action_chains import ActionChains
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
-
 
 # constants
 URL = "https://www.tefas.gov.tr/TarihselVeriler.aspx"
 START_DATE_ID = "MainContent_TextBoxStartDate"
 END_DATE_ID = "MainContent_TextBoxEndDate"
 SEARCH_BUTTON_ID = "MainContent_ButtonSearchDates"
-TAB_VIEWS = {"Genel", "Dagilim"}
-S3_BUCKET = "fonapi-staging"
+TAB_VIEWS = ["Genel", "Dagilim"]
+NO_DATA_TEXT = "Veri Bulunamadı"
+
+# env variables
+S3_BUCKET = os.getenv("FONAPI_S3_BUCKET", "fonapi-staging")
 
 # format callables
 VIEW_ID = "MainContent_GridView{}".format
 PAGE_ID = "MainContent_Label{}PageNumber".format
 NEXT_ID = "MainContent_ImageButton{}Next".format
 JQUERY_CLICK = "jQuery('#{}').click();".format
-ROW_XPATH = '//*[@id="MainContent_GridView{}"]/tbody/tr[2]/td[1]'.format
+ROW_XPATH = "//*[@id='MainContent_GridView{}']/tbody/tr[2]/td[1]".format
+TAB_XPATH = "//*[@id='MainContent_tabs']/ul/li[{}]".format
+
+# chrome options
+OPTIONS = Options()
+OPTIONS.add_argument("--headless")
 
 
 def get_logger():
     """
-    Return a logger for with console and file handler.
-    Create log folder if not exists.
+    Return a logger for with console handler.
     """
-    log_dir = os.path.join(os.path.dirname(__file__), "log")
-    latest_log = 0
-    try:
-        log_files = [f for f in os.listdir(log_dir) if f.endswith(".log")]
-        latest_log = max([int(f.split(".log")[0]) for f in log_files])
-    except FileNotFoundError:
-        os.mkdir(log_dir)
-    except ValueError:
-        pass
-    log_file = os.path.join(log_dir, f"{str(latest_log + 1)}.log")
     log = logging.getLogger(__name__)
     log.setLevel(logging.INFO)
-    file_handler = logging.FileHandler(log_file)
-    file_handler.setLevel(logging.INFO)
     console_handler = logging.StreamHandler()
     console_handler.setLevel(logging.INFO)
     formatter = logging.Formatter("[%(asctime)s][%(name)s][%(levelname)s]: %(message)s")
-    file_handler.setFormatter(formatter)
-    log.addHandler(file_handler)
+    console_handler.setFormatter(formatter)
     log.addHandler(console_handler)
     return log
 
@@ -110,16 +107,19 @@ def parse_pages(driver, out_file, view):
         content = elem.get_attribute("innerHTML")
         parsed = parse_table(content)
         tabs[view] = parsed
-
+        # write output as gziped jsonlines file
         with GzipFile(out_file, "a") as outf:
             json_str = json.dumps(tabs, ensure_ascii=False) + "\n"
-            json_bytes = json_str.encode('utf-8')
+            json_bytes = json_str.encode("utf-8")
             outf.write(json_bytes)
-
+        # find the next button
         next_button = driver.find_elements_by_id(NEXT_ID(view))
         if next_button:
-            # selenium WebDriver click() does not work here for some reason
-            driver.execute_script(JQUERY_CLICK(NEXT_ID(view)))
+            driver.execute_script("arguments[0].scrollIntoView()", next_button[0])
+            action = ActionChains(driver)
+            action.move_to_element(next_button[0])
+            action.click()
+            action.perform()
             # wait until the next page is loaded
             wait.until(
                 EC.text_to_be_present_in_element((By.ID, PAGE_ID(view)), str(page + 1))
@@ -138,6 +138,15 @@ def upload_to_s3(out_file):
     obj = s3_resource.Object(S3_BUCKET, basename)
     obj.upload_file(Filename=out_file)
     LOG.info("Upload completed!")
+
+
+def update_value(elem, value):
+    """Update the value of an html element"""
+    elem.click()
+    elem.clear()
+    elem.send_keys(value)
+    elem.submit()
+    time.sleep(10)
 
 
 def main():
@@ -177,27 +186,34 @@ def main():
     LOG.info(f"Crawling from {start_date} to {end_date}")
     LOG.info("Connecting to the driver...")
     start = datetime.now()
-    with webdriver.Safari() as driver:
+    with webdriver.Firefox(options=OPTIONS) as driver:
+        driver.implicitly_wait(10)
         driver.get(URL)
-        driver.find_element_by_id(START_DATE_ID).send_keys(start_date)
-        driver.find_element_by_id(END_DATE_ID).send_keys(end_date)
-        # selenium WebDriver click() does not work here for some reason
-        driver.execute_script(JQUERY_CLICK(SEARCH_BUTTON_ID))
-        for view in TAB_VIEWS:
-            WebDriverWait(driver, 60).until(
-                EC.text_to_be_present_in_element((By.XPATH, ROW_XPATH(view)), end_date)
-            )
-        for view in TAB_VIEWS:
+        update_value(driver.find_element_by_id(START_DATE_ID), start_date)
+        update_value(driver.find_element_by_id(END_DATE_ID), end_date)
+        driver.find_element_by_id(SEARCH_BUTTON_ID).click()
+        time.sleep(10)
+        # exit if no data in the view
+        if NO_DATA_TEXT in driver.page_source:
+            LOG.info("No data for this date. Exiting...")
+            return
+        for index, view in enumerate(TAB_VIEWS):
+            driver.execute_script("window.scrollTo(0,0)")
             out_file = os.path.join(
                 out_dir,
                 "{}-{}-{}.jsonl.gz".format(
-                    start_date.replace('.', ''), end_date.replace('.', ''), view
+                    start_date.replace(".", ""), end_date.replace(".", ""), view
                 ),
             )
+            tab = driver.find_element_by_xpath(TAB_XPATH(index + 1))
+            action = ActionChains(driver)
+            action.move_to_element(tab)
+            action.click()
+            action.perform()
             parse_pages(driver, out_file, view)
             upload_to_s3(out_file)
     end = datetime.now()
-    LOG.info(f"Crawling completed in {(end - start).total_seconds()} secs")    
+    LOG.info(f"Crawling completed in {(end - start).total_seconds()} secs")
 
 
 if __name__ == "__main__":
