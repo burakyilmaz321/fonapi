@@ -1,8 +1,5 @@
 FROM selenium/standalone-firefox:latest
 
-ARG START_DATE
-ARG END_DATE
-
 WORKDIR /home/seluser
 
 # crawler files
@@ -17,4 +14,4 @@ RUN sudo apt-get update \
     # crawler requirements
     && sudo python3 -m pip install -r requirements.txt
 
-ENTRYPOINT [ "python3", "crawler.py" ]
+COPY . .
